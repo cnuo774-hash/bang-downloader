@@ -68,7 +68,7 @@ def safe_url_filename(source: str) -> str:
     return name if name not in ("", ".", "..") else "download"
 
 
-def format_bytes(value: int | float) -> str:
+def format_bytes(value: Union[int, float]) -> str:
     size = float(value)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":
