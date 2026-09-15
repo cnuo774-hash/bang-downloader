@@ -1,0 +1,3 @@
+#!/bin/zsh
+SCRIPT_DIR="${0:A:h}"
+PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m bang_downloader.cli --ui "$@"
