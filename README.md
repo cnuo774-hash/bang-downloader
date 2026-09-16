@@ -32,7 +32,7 @@ winget install aria2.aria2
 再安装 Bang：
 
 ```bash
-git clone https://github.com/bsnqwq/bang-downloader.git
+git clone https://github.com/cnuo774-hash/bang-downloader.git
 cd bang-downloader
 python3 -m pip install .
 ```
