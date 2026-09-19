@@ -1,0 +1,94 @@
+name: native builds
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, artifact: bang-macos-arm64 }
+          - { os: macos-15-intel, artifact: bang-macos-amd64 }
+          - { os: windows-latest, artifact: bang-windows-amd64 }
+          - { os: ubuntu-latest, artifact: bang-linux-amd64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev unzip
+      - name: Embed pinned aria2 (Unix)
+        if: runner.os != 'Windows'
+        run: bash scripts/prepare-aria2.sh
+      - name: Embed pinned aria2 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/prepare-aria2.ps1
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: Build Wails application (Linux)
+        if: runner.os == 'Linux'
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags webkit2_41
+      - name: Build Wails application (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
+      - name: Verify embedded aria2
+        shell: bash
+        run: |
+          target="internal/engine/binaries/$(go env GOOS)-$(go env GOARCH)-aria2c"
+          [[ "$(go env GOOS)" == windows ]] && target="${target}.exe"
+          ! grep -aFq BANG_ARIA2_PLACEHOLDER "$target"
+          "$target" --version | head -n 1 | grep -F "aria2 version 1.37.0"
+      - name: Add license notices (Unix)
+        if: runner.os != 'Windows'
+        run: mkdir -p build/bin/licenses && cp LICENSE THIRD_PARTY_NOTICES.md build/bin/licenses/
+      - name: Add license notices (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item build/bin/licenses -ItemType Directory -Force | Out-Null
+          Copy-Item LICENSE,THIRD_PARTY_NOTICES.md build/bin/licenses/
+      - name: Package artifact (Unix)
+        if: runner.os != 'Windows'
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C build/bin .
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path build/bin/* -DestinationPath "${{ matrix.artifact }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Download corresponding aria2 source
+        run: |
+          curl -fL --retry 3 https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz -o dist/aria2-1.37.0-source.tar.xz
+          echo "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b  dist/aria2-1.37.0-source.tar.xz" | sha256sum -c -
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

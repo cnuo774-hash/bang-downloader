@@ -1,0 +1,1 @@
+This directory is kept so Go embed works before the first frontend build.

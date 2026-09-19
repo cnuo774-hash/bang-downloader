@@ -1,101 +1,101 @@
 # Bang Downloader
 
-Bang 是一个轻量、本地运行的下载工具。它用同一个命令处理磁力链接、`.torrent` 文件和普通 HTTP 文件，并保留一个按需启动的网页界面。
+Bang 是一个本地优先的下载工具，同时提供命令行和 Wails 桌面界面。它支持磁力链接、`.torrent` 文件和 HTTP(S) 地址，正式发布包会内嵌固定版本的 aria2c，用户无需另行安装 aria2。
 
-> 请仅下载你有权获取和分享的内容。Bang 不提供资源搜索、索引或内容服务。
+> 请只下载你有权获取和分享的内容。Bang 不提供资源搜索、索引或内容服务；BitTorrent 协议会向网络中的其他节点公开你的 IP 地址。
 
-## 特性
+## 功能
 
-- 一个命令完成来源识别、路径创建和下载
-- 支持相对路径、绝对路径和 `~` 用户目录
-- 磁力与种子任务支持 aria2 断点续传，下载完成后不做种
-- HTTP 下载先写入 `.part` 文件，成功后再替换目标文件
-- UI 仅监听 `127.0.0.1`，不会暴露到局域网
-- Python 标准库实现，无运行时 Python 第三方依赖
-- 支持 macOS、Linux 和 Windows，要求 Python 3.9+
+- Go 后端和 Wails + Vue 3 桌面界面
+- 支持磁力链接、本地 `.torrent` 和 HTTP(S) 下载
+- 保存目录支持相对路径、绝对路径和 `~`
+- 正式构建内嵌 aria2 1.37.0，运行时释放到用户缓存目录
+- 窗口关闭时先请求 aria2 正常退出，超时后终止整个进程组或 Windows Job Object
+- aria2 RPC 只监听 `127.0.0.1`，并使用首次启动时生成的随机密钥
+- 下载目录、全局限速、会话和历史记录持久化
+- 分页 API、虚拟列表和增量任务事件，适合较大的任务列表
+- macOS、Windows 和 Linux 分别在原生 GitHub Actions runner 上构建
 
-## 安装
+## 使用
 
-先安装 aria2，它负责磁力链接和种子下载：
-
-```bash
-# macOS
-brew install aria2
-
-# Ubuntu / Debian
-sudo apt install aria2
-
-# Windows
-winget install aria2.aria2
-```
-
-再安装 Bang：
+从 [GitHub Releases](https://github.com/cnuo774-hash/bang-downloader/releases) 下载对应平台的发布包。正式发布版本已经包含 aria2c。
 
 ```bash
-git clone https://github.com/cnuo774-hash/bang-downloader.git
-cd bang-downloader
-python3 -m pip install .
-```
+# 启动桌面界面；不带参数时同样会启动 UI
+bang --ui
+bang
 
-也可以不安装，在源码目录直接使用 `./bang`。
-
-## 命令行
-
-```bash
-# 磁力链接，默认保存到 ~/Downloads
+# 磁力链接，使用设置中的默认目录
 bang 'magnet:?xt=urn:btih:...'
 
-# 本地种子，保存到相对路径
+# 本地种子和相对保存目录
 bang ./movie.torrent -o ./downloads
 
-# 使用绝对保存路径
-bang /path/to/movie.torrent -o /Volumes/Data/downloads
+# 绝对路径也可以写在来源之前
+bang --output /Volumes/Data/downloads /path/to/movie.torrent
 
-# 普通 HTTP 文件
-bang 'https://example.com/file.zip' -o ./downloads
-```
+# HTTP(S) 文件
+bang 'https://example.com/file.zip' -o ~/Downloads
 
-查看所有参数：
-
-```bash
 bang --help
+bang --version
 ```
 
-## 图形界面
+macOS 发布包中的命令行程序位于 `Bang.app/Contents/MacOS/bang`。可以直接从终端运行该文件，或将它链接到 `PATH` 中的目录。
 
-```bash
-bang --ui
-```
+## 数据位置
 
-程序会打开 <http://127.0.0.1:8765>。如不希望自动打开浏览器，或需要更换端口：
+Bang 使用操作系统提供的标准用户目录，不会把 aria2c 释放到当前工作目录。
 
-```bash
-bang --ui --no-browser --port 9000
-```
+| 数据 | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| 配置 | `~/Library/Application Support/Bang/config.json` | `$XDG_CONFIG_HOME/Bang/config.json` | `%AppData%\Bang\config.json` |
+| 缓存、日志、会话 | `~/Library/Caches/Bang/` | `$XDG_CACHE_HOME/Bang/` | `%LocalAppData%\Bang\` |
 
-macOS 源码用户也可以双击 `start.command`。
+缓存目录包含释放后的 aria2c、`bang.log`、aria2 会话及最多 200 条历史任务。RPC 密钥保存在权限受限的配置文件中，不会显示在界面里。
 
 ## 开发
 
+需要 Go 1.23+、Node.js 22、pnpm 10，以及当前平台的 Wails 系统依赖。源码仓库中的 aria2 文件是小型占位文件；开发模式会使用 `PATH` 中的 aria2c，正式构建前由准备脚本替换为固定的 1.37.0 可执行文件。
+
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m bang_downloader.cli --version
+cd frontend
+pnpm install --frozen-lockfile
+pnpm build
+cd ..
+
+go test ./...
+go vet ./...
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 dev
 ```
 
-项目结构：
+构建正式包：
+
+```bash
+# macOS / Linux，在目标平台本机执行
+bash scripts/prepare-aria2.sh
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
+
+# Windows PowerShell
+./scripts/prepare-aria2.ps1
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
+```
+
+Wails 依赖原生 WebView 和 CGO。不要在 Linux 上交叉编译 Windows 或 macOS 版本；仓库的 Release 工作流为每个平台使用各自的 runner。
+
+## 项目结构
 
 ```text
-bang_downloader/core.py   下载、路径和 aria2 命令构造
-bang_downloader/cli.py    命令行入口
-bang_downloader/ui.py     本地网页服务
-bang_downloader/web/      UI 资源
-tests/                    无网络单元测试
+main.go                     CLI 与 Wails 生命周期
+app.go                      类型安全的前后端绑定
+internal/config/            配置和 RPC 密钥持久化
+internal/downloader/        来源和保存路径校验
+internal/engine/            aria2 嵌入、RPC 与进程管理
+frontend/                   Vue 3 / TypeScript 界面
+scripts/                    固定版本 aria2 的构建准备脚本
+.github/workflows/          测试和各平台原生发布构建
 ```
 
-## 安全与隐私
+## 安全与许可
 
-Bang 在本机工作，不会把链接、种子或下载记录发送给第三方服务。BitTorrent 协议本身会向网络中的其他节点公开你的 IP 地址。发现安全问题请参阅 [SECURITY.md](SECURITY.md)。
-
-## 贡献与许可
-
-欢迎提交 issue 和 pull request，细节见 [CONTRIBUTING.md](CONTRIBUTING.md)。项目使用 [MIT License](LICENSE)。
+发现安全问题请参阅 [SECURITY.md](SECURITY.md)。Bang 自身使用 [MIT License](LICENSE)；发布包内嵌的 aria2 使用 GPL-2.0-or-later，详情见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

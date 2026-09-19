@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Bang",
+  "outputfilename": "bang",
+  "frontend:install": "pnpm install --frozen-lockfile",
+  "frontend:build": "pnpm build",
+  "frontend:dev:watcher": "pnpm dev -- --host 127.0.0.1",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "cnuo774-hash"
+  },
+  "info": {
+    "productName": "Bang Downloader",
+    "productVersion": "2.0.0",
+    "copyright": "Copyright © 2026 cnuo774-hash",
+    "comments": "A local-first BitTorrent download manager"
+  }
+}
