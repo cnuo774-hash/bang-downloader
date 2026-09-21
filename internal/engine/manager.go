@@ -112,6 +112,11 @@ func New(cfg *config.Config) (*Manager, error) {
 		"--save-session-interval=30",
 		"--auto-file-renaming=false",
 		"--allow-overwrite=false",
+		"--uri-selector=feedback",
+		"--max-tries=3",
+		"--retry-wait=5",
+		"--connect-timeout=15",
+		"--timeout=30",
 		"--console-log-level=warn",
 	}
 	if cfg.MaxDownload != "" {
@@ -190,30 +195,57 @@ func (m *Manager) waitReady() error {
 }
 
 func (m *Manager) Add(ctx context.Context, rawSource, output string) (Task, error) {
-	source, err := downloader.ParseSource(rawSource)
+	return m.AddWithSources(ctx, []string{rawSource}, output)
+}
+
+// AddWithSources adds one download using one or more equivalent HTTP(S) sources.
+// aria2 retries and selects another URI when a source times out or fails.
+func (m *Manager) AddWithSources(ctx context.Context, rawSources []string, output string) (Task, error) {
+	if len(rawSources) == 0 {
+		return Task{}, errors.New("下载地址不能为空")
+	}
+	sources := make([]downloader.Source, 0, len(rawSources))
+	for _, raw := range rawSources {
+		source, err := downloader.ParseSource(raw)
+		if err != nil {
+			return Task{}, err
+		}
+		sources = append(sources, source)
+	}
+	if sources[0].Kind == downloader.SourceTorrent && len(sources) > 1 {
+		return Task{}, errors.New("种子文件不能配置备用下载源")
+	}
+	if len(sources) > 1 && strings.HasPrefix(strings.ToLower(sources[0].Value), "magnet:") {
+		return Task{}, errors.New("磁力链接不能配置备用下载源")
+	}
+	resolvedOutput, err := downloader.ResolveOutput(output)
 	if err != nil {
 		return Task{}, err
 	}
-	output, err = downloader.ResolveOutput(output)
-	if err != nil {
-		return Task{}, err
-	}
+	output = resolvedOutput
 	options := map[string]string{"dir": output}
 	var gid string
-	if source.Kind == downloader.SourceTorrent {
-		data, err := os.ReadFile(source.Value)
+	if sources[0].Kind == downloader.SourceTorrent {
+		data, err := os.ReadFile(sources[0].Value)
 		if err != nil {
 			return Task{}, err
 		}
 		encoded := base64.StdEncoding.EncodeToString(data)
 		err = m.rpc.call(ctx, "aria2.addTorrent", []interface{}{encoded, []string{}, options}, &gid)
 	} else {
-		err = m.rpc.call(ctx, "aria2.addUri", []interface{}{[]string{source.Value}, options}, &gid)
+		uris := make([]string, 0, len(sources))
+		for _, source := range sources {
+			if source.Kind != downloader.SourceURI {
+				return Task{}, errors.New("备用下载源必须是 HTTP(S) 地址")
+			}
+			uris = append(uris, source.Value)
+		}
+		err = m.rpc.call(ctx, "aria2.addUri", []interface{}{uris, options}, &gid)
 	}
 	if err != nil {
 		return Task{}, err
 	}
-	task := Task{ID: gid, Name: displayName(source.Value), Status: "waiting", Output: output, UpdatedAt: time.Now().UnixMilli()}
+	task := Task{ID: gid, Name: displayName(sources[0].Value), Status: "waiting", Output: output, UpdatedAt: time.Now().UnixMilli()}
 	m.update(task)
 	return task, nil
 }

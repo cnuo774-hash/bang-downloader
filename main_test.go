@@ -27,3 +27,17 @@ func TestParseCLIArgsRejectsMultipleSources(t *testing.T) {
 		t.Fatal("expected multiple sources to fail")
 	}
 }
+
+func TestParseCLIArgsAcceptsMirrors(t *testing.T) {
+	opts, err := parseCLIArgs([]string{
+		"https://primary.example/file.zip",
+		"--mirror", "https://mirror-a.example/file.zip",
+		"--mirror=https://mirror-b.example/file.zip",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.mirrors) != 2 {
+		t.Fatalf("expected two mirrors, got %#v", opts.mirrors)
+	}
+}

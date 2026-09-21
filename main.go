@@ -28,6 +28,7 @@ const version = "2.0.0"
 type cliOptions struct {
 	output  string
 	source  string
+	mirrors []string
 	ui      bool
 	version bool
 	help    bool
@@ -80,8 +81,8 @@ func runCLI(args []string) int {
 		return 0
 	}
 	if opts.ui {
-		if opts.source != "" || opts.output != "" {
-			fmt.Fprintln(os.Stderr, "--ui 不能与下载来源或 --output 同时使用")
+		if opts.source != "" || opts.output != "" || len(opts.mirrors) > 0 {
+			fmt.Fprintln(os.Stderr, "--ui 不能与下载来源、--output 或 --mirror 同时使用")
 			return 2
 		}
 		if err := runUI(); err != nil {
@@ -119,7 +120,8 @@ func runCLI(args []string) int {
 		fmt.Fprintln(os.Stderr, "保存路径无效：", err)
 		return 2
 	}
-	task, err := manager.Add(ctx, opts.source, target)
+	sources := append([]string{opts.source}, opts.mirrors...)
+	task, err := manager.AddWithSources(ctx, sources, target)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "添加任务失败：", err)
 		return 1
@@ -150,6 +152,18 @@ func parseCLIArgs(args []string) (cliOptions, error) {
 			if opts.output == "" {
 				return cliOptions{}, fmt.Errorf("--output 缺少目录参数")
 			}
+		case arg == "--mirror":
+			index++
+			if index >= len(args) || strings.TrimSpace(args[index]) == "" {
+				return cliOptions{}, fmt.Errorf("--mirror 缺少备用 HTTP(S) 地址")
+			}
+			opts.mirrors = append(opts.mirrors, args[index])
+		case strings.HasPrefix(arg, "--mirror="):
+			mirror := strings.TrimPrefix(arg, "--mirror=")
+			if strings.TrimSpace(mirror) == "" {
+				return cliOptions{}, fmt.Errorf("--mirror 缺少备用 HTTP(S) 地址")
+			}
+			opts.mirrors = append(opts.mirrors, mirror)
 		case strings.HasPrefix(arg, "-"):
 			return cliOptions{}, fmt.Errorf("未知参数 %s", arg)
 		default:
@@ -164,7 +178,7 @@ func parseCLIArgs(args []string) (cliOptions, error) {
 
 func printUsage(output *os.File) {
 	fmt.Fprintln(output, "用法：")
-	fmt.Fprintln(output, "  bang <磁力链接|种子文件|HTTP 地址> [-o 保存目录]")
+	fmt.Fprintln(output, "  bang <磁力链接|种子文件|HTTP 地址> [-o 保存目录] [--mirror 备用HTTP地址]")
 	fmt.Fprintln(output, "  bang --ui")
 	fmt.Fprintln(output, "  bang --version")
 }

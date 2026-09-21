@@ -37,6 +37,10 @@ bang --output /Volumes/Data/downloads /path/to/movie.torrent
 # HTTP(S) 文件
 bang 'https://example.com/file.zip' -o ~/Downloads
 
+# HTTP(S) 超时或失败时切换备用源（可重复指定 --mirror）
+bang 'https://primary.example.com/file.zip' \\
+  --mirror 'https://mirror.example.com/file.zip' -o ~/Downloads
+
 bang --help
 bang --version
 ```
@@ -56,7 +60,7 @@ Bang 使用操作系统提供的标准用户目录，不会把 aria2c 释放到�
 
 ## 开发
 
-需要 Go 1.23+、Node.js 22、pnpm 10，以及当前平台的 Wails 系统依赖。源码仓库中的 aria2 文件是小型占位文件；开发模式会使用 `PATH` 中的 aria2c，正式构建前由准备脚本替换为固定的 1.37.0 可执行文件。
+需要 Go 1.23+、Node.js 22、pnpm 10，以及当前平台的 Wails 系统依赖。发布包会内嵌固定版本的 aria2c，并在运行时释放到用户缓存目录。开发模式若缺少对应资源会回退到 `PATH` 中的 aria2c。HTTP 下载可通过重复 `--mirror` 提供备用源；aria2 会在连接超时、失败重试时切换 URI。
 
 ```bash
 cd frontend
@@ -82,6 +86,8 @@ go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
 ```
 
 Wails 依赖原生 WebView 和 CGO。不要在 Linux 上交叉编译 Windows 或 macOS 版本；仓库的 Release 工作流为每个平台使用各自的 runner。
+
+macOS 的准备脚本优先从 GitHub Releases 下载 aria2 官方源码；连接超时或下载失败时会自动切换到 SourceForge 官方镜像。无论使用哪个来源，都必须通过固定的 SHA-256 校验才会参与构建。
 
 ## 项目结构
 
