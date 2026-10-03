@@ -47,6 +47,8 @@ bang --help
 bang --version
 ```
 
+桌面运行需要系统 WebView：Windows 使用 WebView2 Runtime；Linux 使用 GTK 3 与 WebKitGTK 4.1。具体依赖见 [Wails 官方说明](https://wails.io/docs/gettingstarted/installation/)。
+
 macOS 发布包中的命令行程序位于 `Bang.app/Contents/MacOS/bang`。可以直接从终端运行该文件，或将它链接到 `PATH` 中的目录。
 
 ## 数据位置

@@ -44,11 +44,17 @@ case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
     target="$asset_dir/linux-amd64-aria2c"
     tls_options=(--without-gnutls --with-openssl)
+    platform_options=()
     jobs="$(getconf _NPROCESSORS_ONLN)"
     ;;
   Darwin:arm64|Darwin:x86_64)
     if [[ "$(uname -m)" == "arm64" ]]; then target="$asset_dir/darwin-arm64-aria2c"; else target="$asset_dir/darwin-amd64-aria2c"; fi
     tls_options=(--with-appletls --without-gnutls --without-openssl)
+    # These optional libraries can be discovered from Homebrew on Intel runners.
+    # HTTP/FTP/BitTorrent and JSON-RPC work without them; keep the app portable.
+    platform_options=(--disable-nls --without-libgmp --without-libexpat)
+    export PKG_CONFIG_LIBDIR="$temp_dir/pkgconfig"
+    mkdir -p "$PKG_CONFIG_LIBDIR"
     jobs="$(sysctl -n hw.ncpu)"
     ;;
   *)
@@ -67,6 +73,7 @@ tar -xJf "$source_archive" -C "$temp_dir"
 source_dir="$temp_dir/aria2-${version}"
 (cd "$source_dir" && ./configure \
   "${tls_options[@]}" \
+  "${platform_options[@]}" \
   --without-libnettle --without-libgcrypt --without-libcares \
   --without-libxml2 --without-libssh2 --without-sqlite3 && make -j"$jobs")
 binary="$source_dir/src/aria2c"
@@ -77,8 +84,12 @@ cp "$source_dir/COPYING" "$root/build/third-party/ARIA2-COPYING"
 test -x "$binary"
 install -m 0700 "$binary" "$target"
 "$target" --version | head -n 1 | grep -F "aria2 version ${version}"
-if [[ "$(uname -s)" == "Darwin" ]] && otool -L "$target" | grep -Eq '/opt/homebrew|/usr/local'; then
-  echo "aria2c unexpectedly depends on package-manager libraries" >&2
-  exit 1
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  dependencies="$(otool -L "$target")"
+  echo "$dependencies"
+  if echo "$dependencies" | grep -Eq '/opt/homebrew|/usr/local'; then
+    echo "aria2c unexpectedly depends on package-manager libraries" >&2
+    exit 1
+  fi
 fi
 echo "Embedded $target"
