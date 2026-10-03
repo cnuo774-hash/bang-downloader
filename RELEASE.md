@@ -38,7 +38,11 @@ Linux 将 `webkit2_41` 加入测试、扫描和 Wails 构建标签。Windows 使
 ## 验证记录（2026-10-03）
 
 - 本地 macOS arm64：Go 竞态及集成测试、静态检查、前端生产构建、前端事件回归、零可达漏洞扫描与原生桌面打包通过。
-- 四平台原生验收：推送后由 GitHub Actions 执行，最终结果以相同提交的工作流记录为准。
+- 代码验收提交：`adf67f3321366695784541768357af064b94d34f`。
+- [通用测试与漏洞扫描](https://github.com/cnuo774-hash/bang-downloader/actions/runs/37126423994)通过：Go 竞态测试、静态检查、前端检查与生产构建、Go 可达漏洞扫描。
+- 本地最终打包应用：CLI 版本正确，HTTP 下载内容逐字节一致，启动后临时 RPC 配置清理通过。归档包含程序、许可和 aria2 对应源码，校验清单位于 `build/releases/SHA256SUMS`。
+- [四平台原生验收](https://github.com/cnuo774-hash/bang-downloader/actions/runs/37126435060)全部通过：macOS arm64、macOS amd64、Windows amd64、Linux amd64 的实际内嵌引擎竞态集成测试、静态检查、前端验证、桌面构建和许可归档成功。四个平台的发行归档可从该运行的 Artifacts 下载。
+- 按用户确认，人工桌面检查保留为待验收项，本次完成自动化验证和仓库推送。
 - 原生窗口点击与视觉验收未自动执行：当前系统未授予 Computer Use 权限，Browser 无法核实管理策略而拒绝本地页面访问。自动化测试覆盖前端状态逻辑和真实后端下载流程，不能代替窗口、文件选择器和视觉的人工检查。
 
 ## 人工桌面检查
