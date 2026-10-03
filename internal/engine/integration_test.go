@@ -50,6 +50,16 @@ func startTestEngine(t *testing.T, cfg *config.Config) *Manager {
 			t.Error(err)
 		}
 	})
+	for _, arg := range m.cmd.Args {
+		if strings.Contains(arg, cfg.RPCSecret) {
+			t.Fatal("RPC secret leaked into process arguments")
+		}
+		if strings.HasPrefix(arg, "--conf-path=") {
+			if _, err := os.Stat(strings.TrimPrefix(arg, "--conf-path=")); !os.IsNotExist(err) {
+				t.Fatal("temporary RPC secret file was not removed")
+			}
+		}
+	}
 	var info struct {
 		Version string `json:"version"`
 	}

@@ -40,6 +40,12 @@ func TestOutputRejectsExistingFile(t *testing.T) {
 	}
 }
 
+func TestOutputRejectsSessionLineBreaks(t *testing.T) {
+	if _, err := ResolveOutput(filepath.Join(t.TempDir(), "folder\nwith-newline")); err == nil {
+		t.Fatal("accepted a directory that cannot safely round-trip through an aria2 session")
+	}
+}
+
 func TestResolveRelativeOutput(t *testing.T) {
 	base := t.TempDir()
 	old, _ := os.Getwd()

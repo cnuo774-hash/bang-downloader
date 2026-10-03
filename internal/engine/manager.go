@@ -115,7 +115,7 @@ type rpcTask struct {
 var taskFields = []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "dir", "errorMessage", "bittorrent", "files", "followedBy"}
 
 func New(cfg *config.Config) (*Manager, error) {
-	if cfg == nil || cfg.RPCSecret == "" {
+	if cfg == nil || cfg.RPCSecret == "" || strings.ContainsAny(cfg.RPCSecret, "\x00\r\n") {
 		return nil, errors.New("下载引擎需要非空 RPC 密钥")
 	}
 	aria2, err := resolveAria2()
@@ -144,12 +144,25 @@ func New(cfg *config.Config) (*Manager, error) {
 			_ = lock.Close()
 		}
 	}()
+	// Keep the RPC secret out of the process command line, which other local
+	// users can inspect. This private startup file is removed once RPC is ready.
+	rpcConfig, err := os.CreateTemp(dir, ".rpc-*.conf")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(rpcConfig.Name())
+	defer rpcConfig.Close()
+	if _, err := fmt.Fprintf(rpcConfig, "rpc-secret=%s\n", cfg.RPCSecret); err != nil {
+		return nil, err
+	}
+	if err := rpcConfig.Close(); err != nil {
+		return nil, err
+	}
 	args := []string{
-		"--no-conf=true",
+		"--conf-path=" + rpcConfig.Name(),
 		"--enable-rpc=true",
 		"--rpc-listen-all=false",
 		"--rpc-listen-port=" + strconv.Itoa(port),
-		"--rpc-secret=" + cfg.RPCSecret,
 		"--dir=" + cfg.Output,
 		"--continue=true",
 		"--check-integrity=true",

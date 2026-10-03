@@ -61,7 +61,7 @@ func ResolveOutput(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New("保存目录不能为空")
 	}
-	if strings.ContainsRune(raw, '\x00') {
+	if strings.ContainsAny(raw, "\x00\r\n") {
 		return "", errors.New("保存目录包含非法字符")
 	}
 	path, err := expandPath(raw)
