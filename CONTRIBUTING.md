@@ -4,7 +4,7 @@
 
 1. Fork 仓库并从 `main` 创建分支。
 2. 保持改动聚焦，并为行为变化添加测试。
-3. 在 `frontend` 目录执行 `pnpm install --frozen-lockfile && pnpm build`。
+3. 在 `frontend` 目录执行 `pnpm install --frozen-lockfile && pnpm test && pnpm build`。
 4. 在项目根目录执行 `go test ./...` 和 `go vet ./...`。
 5. 涉及桌面界面时，在当前目标平台运行 Wails 开发模式或正式构建进行验证。
 6. 提交 pull request，说明问题、实现方式和验证结果。

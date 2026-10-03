@@ -17,6 +17,8 @@ func configureProcess(cmd *exec.Cmd) (*processGuard, error) {
 
 func (g *processGuard) attach(cmd *exec.Cmd) error { return nil }
 
+func (g *processGuard) close() error { return nil }
+
 func (g *processGuard) kill(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { backend, type PublicConfig, type Task, type TaskEvent } from './api'
+import { TaskStore } from './taskStore'
 
-const tasks = ref<Task[]>([])
+const store = reactive(new TaskStore())
+const tasks = computed(() => store.tasks)
 const config = ref<PublicConfig>({ output: '', maxDownload: '', engineVersion: '1.37.0' })
 const activeView = ref<'tasks' | 'settings'>('tasks')
 const filter = ref<'all' | 'active' | 'complete'>('all')
@@ -11,10 +13,12 @@ const source = ref('')
 const output = ref('')
 const busy = ref(false)
 const notice = ref('')
-const taskTotal = ref(0)
-const loadedOffset = ref(0)
+const taskTotal = computed(() => store.total)
+const loadedOffset = computed(() => store.tasks.length)
 const loadingMore = ref(false)
 let unsubscribe: undefined | (() => void)
+let noticeTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
 const pageSize = 100
 
 const visibleTasks = computed(() => tasks.value.filter((task) => {
@@ -22,34 +26,34 @@ const visibleTasks = computed(() => tasks.value.filter((task) => {
   if (filter.value === 'complete') return task.status === 'complete'
   return true
 }))
-const activeCount = computed(() => tasks.value.filter((t) => t.status === 'active').length)
-const completeCount = computed(() => tasks.value.filter((t) => t.status === 'complete').length)
-const totalSpeed = computed(() => tasks.value.reduce((sum, task) => sum + task.downloadBps, 0))
+const activeCount = computed(() => store.stats.active)
+const completeCount = computed(() => store.stats.complete)
+const totalSpeed = computed(() => store.stats.downloadBps)
 const canLoadMore = computed(() => loadedOffset.value < taskTotal.value)
 
 onMounted(async () => {
   try {
+    unsubscribe = backend.onTask(upsert)
     config.value = await backend.config()
     output.value = config.value.output
-    const page = await backend.list(0, pageSize)
-    tasks.value = page.items || []
-    taskTotal.value = page.total
-    loadedOffset.value = page.items?.length || 0
-    unsubscribe = backend.onTask(upsert)
+    await reload()
   } catch (error) {
     showError(error)
   }
 })
 
-onUnmounted(() => unsubscribe?.())
+onUnmounted(() => { disposed = true; unsubscribe?.(); clearTimeout(noticeTimer) })
 
 function upsert(event: TaskEvent) {
-  const index = tasks.value.findIndex((task) => task.id === event.task.id)
-  if (index < 0) {
-    tasks.value.unshift(event.task)
-    taskTotal.value += 1
-    loadedOffset.value += 1
-  } else tasks.value[index] = event.task
+  if (!disposed) store.apply(event)
+}
+
+async function reload() {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const page = await backend.list(0, pageSize)
+    if (disposed || store.page(page)) return
+  }
+  throw new Error('任务列表正在变化，请稍后重试')
 }
 
 async function loadMore() {
@@ -57,10 +61,7 @@ async function loadMore() {
   loadingMore.value = true
   try {
     const page = await backend.list(loadedOffset.value, pageSize)
-    const known = new Set(tasks.value.map((task) => task.id))
-    tasks.value.push(...(page.items || []).filter((task) => !known.has(task.id)))
-    loadedOffset.value += page.items?.length || 0
-    taskTotal.value = page.total
+    if (!disposed && !store.page(page, true)) await reload()
   } catch (error) {
     showError(error)
   } finally {
@@ -72,8 +73,8 @@ async function submit() {
   if (!source.value.trim() || !output.value.trim()) return
   busy.value = true
   try {
-    const task = await backend.add(source.value, output.value)
-    upsert({ kind: 'upsert', task })
+    await backend.add(source.value, output.value)
+    await reload()
     source.value = ''
     showAdd.value = false
     flash('任务已加入下载队列')
@@ -85,24 +86,35 @@ async function submit() {
 }
 
 async function pickTorrent() {
-  const path = await backend.chooseTorrent()
-  if (path) source.value = path
+  try {
+    const path = await backend.chooseTorrent()
+    if (path) source.value = path
+  } catch (error) { showError(error) }
 }
 
 async function pickOutput(target = output) {
-  const path = await backend.chooseOutput()
-  if (path) target.value = path
+  try {
+    const path = await backend.chooseOutput()
+    if (path) target.value = path
+  } catch (error) { showError(error) }
 }
 
 async function pickSettingsOutput() {
-  const path = await backend.chooseOutput()
-  if (path) config.value.output = path
+  try {
+    const path = await backend.chooseOutput()
+    if (path) config.value.output = path
+  } catch (error) { showError(error) }
+}
+
+async function openOutput() {
+  try { await backend.openOutput() } catch (error) { showError(error) }
 }
 
 async function saveSettings() {
   busy.value = true
   try {
     await backend.saveSettings(config.value.output, config.value.maxDownload)
+    config.value = await backend.config()
     output.value = config.value.output
     flash('设置已保存')
   } catch (error) {
@@ -124,9 +136,7 @@ async function taskAction(task: Task) {
 async function remove(task: Task) {
   try {
     await backend.remove(task.id)
-    tasks.value = tasks.value.filter((item) => item.id !== task.id)
-    taskTotal.value = Math.max(0, taskTotal.value - 1)
-    loadedOffset.value = Math.max(0, loadedOffset.value - 1)
+    await reload()
   } catch (error) {
     showError(error)
   }
@@ -149,7 +159,8 @@ function statusLabel(status: string) {
 
 function flash(message: string) {
   notice.value = message
-  window.setTimeout(() => { notice.value = '' }, 2600)
+  clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => { notice.value = '' }, 5000)
 }
 
 function showError(error: unknown) {
@@ -167,7 +178,7 @@ function showError(error: unknown) {
       </nav>
       <div class="engine-card">
         <span class="online-dot"></span>
-        <div><strong>引擎在线</strong><small>aria2 {{ config.engineVersion }}</small></div>
+        <div><strong>下载引擎</strong><small>aria2 {{ config.engineVersion }}</small></div>
       </div>
     </aside>
 
@@ -190,12 +201,13 @@ function showError(error: unknown) {
               {{ item === 'all' ? '全部' : item === 'active' ? '进行中' : '已完成' }}
             </button>
           </div>
-          <button class="ghost" @click="backend.openOutput()">打开下载目录 ↗</button>
+          <button class="ghost" @click="openOutput">打开下载目录 ↗</button>
         </div>
 
         <div v-if="!visibleTasks.length" class="empty">
           <span>↓</span><h3>下载列表还是空的</h3><p>添加磁力链接、HTTP 地址或本地种子文件。</p>
           <button class="secondary" @click="showAdd = true">添加第一个任务</button>
+          <button v-if="canLoadMore" class="load-more" :disabled="loadingMore" @click="loadMore">加载更多任务</button>
         </div>
         <DynamicScroller v-else class="task-list" :items="visibleTasks" :min-item-size="112" key-field="id" @scroll-end="loadMore">
           <template #default="{ item, active }">
@@ -209,8 +221,8 @@ function showError(error: unknown) {
                   <p v-if="item.error" class="task-error">{{ item.error }}</p>
                 </div>
                 <div class="actions">
-                  <button v-if="!['complete', 'error', 'removed'].includes(item.status)" @click="taskAction(item)">{{ item.status === 'paused' ? '▶' : 'Ⅱ' }}</button>
-                  <button @click="remove(item)">×</button>
+                  <button v-if="!['complete', 'error', 'removed'].includes(item.status)" :aria-label="item.status === 'paused' ? '恢复任务' : '暂停任务'" @click="taskAction(item)">{{ item.status === 'paused' ? '▶' : 'Ⅱ' }}</button>
+                  <button aria-label="移除任务" title="移除记录，保留已下载文件" @click="remove(item)">×</button>
                 </div>
               </article>
             </DynamicScrollerItem>
@@ -236,7 +248,7 @@ function showError(error: unknown) {
     </main>
 
     <div v-if="showAdd" class="backdrop" @click.self="showAdd = false">
-      <form class="drawer" @submit.prevent="submit">
+      <form class="drawer" role="dialog" aria-modal="true" aria-label="添加下载任务" @keydown.esc="showAdd = false" @submit.prevent="submit">
         <div class="drawer-head"><div><p class="eyebrow">NEW DOWNLOAD</p><h2>添加下载任务</h2></div><button type="button" class="close" @click="showAdd = false">×</button></div>
         <label>磁力链接、HTTP 地址或种子文件<textarea v-model="source" rows="5" placeholder="magnet:?xt=urn:btih:…"></textarea></label>
         <button type="button" class="file-pick" @click="pickTorrent">选择本地 .torrent 文件</button>
@@ -244,6 +256,6 @@ function showError(error: unknown) {
         <div class="drawer-actions"><button type="button" class="ghost" @click="showAdd = false">取消</button><button class="primary" :disabled="busy || !source.trim()">{{ busy ? '正在添加…' : '开始下载' }}</button></div>
       </form>
     </div>
-    <Transition name="toast"><div v-if="notice" class="toast">{{ notice }}</div></Transition>
+    <Transition name="toast"><div v-if="notice" class="toast" role="status">{{ notice }}</div></Transition>
   </div>
 </template>

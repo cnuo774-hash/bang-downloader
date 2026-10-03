@@ -46,12 +46,19 @@ func (g *processGuard) attach(cmd *exec.Cmd) error {
 
 func (g *processGuard) kill(cmd *exec.Cmd) error {
 	if g.job != 0 {
-		err := windows.CloseHandle(g.job)
-		g.job = 0
-		return err
+		return g.close()
 	}
 	if cmd != nil && cmd.Process != nil {
 		return cmd.Process.Kill()
 	}
 	return nil
+}
+
+func (g *processGuard) close() error {
+	if g.job == 0 {
+		return nil
+	}
+	err := windows.CloseHandle(g.job)
+	g.job = 0
+	return err
 }

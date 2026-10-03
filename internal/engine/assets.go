@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -10,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 const aria2Version = "1.37.0"
@@ -29,8 +29,11 @@ func resolveAria2() (string, error) {
 	}
 	assetName := fmt.Sprintf("binaries/%s-%s-%s", runtime.GOOS, runtime.GOARCH, name)
 	data, err := aria2Assets.ReadFile(assetName)
-	if err == nil && !strings.HasPrefix(string(data), "BANG_ARIA2_PLACEHOLDER") {
+	if err == nil && len(data) > 0 && !bytes.HasPrefix(data, []byte("BANG_ARIA2_PLACEHOLDER")) {
 		return extractAria2(data, name)
+	}
+	if releaseBuild {
+		return "", fmt.Errorf("发行构建缺少内嵌 aria2c: %s", assetName)
 	}
 	// Source builds remain convenient for contributors; release builds fail in CI if
 	// the placeholder was not replaced and always contain the pinned executable.

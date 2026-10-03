@@ -23,7 +23,7 @@ import (
 //go:embed all:frontend/dist
 var frontend embed.FS
 
-const version = "2.0.0"
+const version = "2.0.1"
 
 type cliOptions struct {
 	output  string
@@ -143,7 +143,7 @@ func parseCLIArgs(args []string) (cliOptions, error) {
 			opts.ui = true
 		case arg == "-o" || arg == "--output":
 			index++
-			if index >= len(args) {
+			if index >= len(args) || strings.TrimSpace(args[index]) == "" || strings.HasPrefix(args[index], "-") {
 				return cliOptions{}, fmt.Errorf("%s 缺少目录参数", arg)
 			}
 			opts.output = args[index]

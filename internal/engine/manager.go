@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,29 +25,52 @@ import (
 )
 
 type Task struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Total       int64  `json:"total"`
-	Completed   int64  `json:"completed"`
-	DownloadBPS int64  `json:"downloadBps"`
-	Output      string `json:"output"`
-	Error       string `json:"error,omitempty"`
-	UpdatedAt   int64  `json:"updatedAt"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Status      string   `json:"status"`
+	Total       int64    `json:"total"`
+	Completed   int64    `json:"completed"`
+	DownloadBPS int64    `json:"downloadBps"`
+	Output      string   `json:"output"`
+	Error       string   `json:"error,omitempty"`
+	UpdatedAt   int64    `json:"updatedAt"`
+	AddedAt     int64    `json:"addedAt"`
+	FollowedBy  []string `json:"followedBy,omitempty"`
 }
 
 type Event struct {
-	Kind string `json:"kind"`
-	Task Task   `json:"task"`
+	Kind     string    `json:"kind"`
+	Task     Task      `json:"task"`
+	Added    bool      `json:"added"`
+	Total    int       `json:"total"`
+	Revision uint64    `json:"revision"`
+	Stats    TaskStats `json:"stats"`
+}
+
+type TaskStats struct {
+	Active      int   `json:"active"`
+	Complete    int   `json:"complete"`
+	DownloadBPS int64 `json:"downloadBps"`
+}
+
+func (s *TaskStats) adjust(task Task, delta int) {
+	if task.Status == "active" {
+		s.Active += delta
+		s.DownloadBPS += int64(delta) * task.DownloadBPS
+	}
+	if task.Status == "complete" && len(task.FollowedBy) == 0 {
+		s.Complete += delta
+	}
 }
 
 type TaskPage struct {
-	Items []Task `json:"items"`
-	Total int    `json:"total"`
+	Items    []Task    `json:"items"`
+	Total    int       `json:"total"`
+	Revision uint64    `json:"revision"`
+	Stats    TaskStats `json:"stats"`
 }
 
 type Manager struct {
-	cfg         *config.Config
 	cmd         *exec.Cmd
 	guard       *processGuard
 	rpc         *rpcClient
@@ -55,21 +79,29 @@ type Manager struct {
 	processDone chan struct{}
 	closeOnce   sync.Once
 	closeErr    error
+	watchDone   chan struct{}
+	sessionLock *os.File
+	controlMu   sync.Mutex
+	historyMu   sync.Mutex
 
-	mu      sync.RWMutex
-	tasks   map[string]Task
-	sink    func(Event)
-	history string
+	mu       sync.RWMutex
+	tasks    map[string]Task
+	sink     func(Event)
+	history  string
+	revision uint64
+	stats    TaskStats
+	waiters  map[string]int
 }
 
 type rpcTask struct {
-	GID             string `json:"gid"`
-	Status          string `json:"status"`
-	TotalLength     string `json:"totalLength"`
-	CompletedLength string `json:"completedLength"`
-	DownloadSpeed   string `json:"downloadSpeed"`
-	Dir             string `json:"dir"`
-	ErrorMessage    string `json:"errorMessage"`
+	GID             string   `json:"gid"`
+	Status          string   `json:"status"`
+	TotalLength     string   `json:"totalLength"`
+	CompletedLength string   `json:"completedLength"`
+	DownloadSpeed   string   `json:"downloadSpeed"`
+	Dir             string   `json:"dir"`
+	ErrorMessage    string   `json:"errorMessage"`
+	FollowedBy      []string `json:"followedBy"`
 	Bittorrent      struct {
 		Info struct {
 			Name string `json:"name"`
@@ -80,9 +112,12 @@ type rpcTask struct {
 	} `json:"files"`
 }
 
-var taskFields = []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "dir", "errorMessage", "bittorrent", "files"}
+var taskFields = []string{"gid", "status", "totalLength", "completedLength", "downloadSpeed", "dir", "errorMessage", "bittorrent", "files", "followedBy"}
 
 func New(cfg *config.Config) (*Manager, error) {
+	if cfg == nil || cfg.RPCSecret == "" {
+		return nil, errors.New("下载引擎需要非空 RPC 密钥")
+	}
 	aria2, err := resolveAria2()
 	if err != nil {
 		return nil, err
@@ -99,7 +134,18 @@ func New(cfg *config.Config) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	lock, err := lockSession(filepath.Join(dir, "session.lock"))
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			_ = lock.Close()
+		}
+	}()
 	args := []string{
+		"--no-conf=true",
 		"--enable-rpc=true",
 		"--rpc-listen-all=false",
 		"--rpc-listen-port=" + strconv.Itoa(port),
@@ -118,6 +164,8 @@ func New(cfg *config.Config) (*Manager, error) {
 		"--connect-timeout=15",
 		"--timeout=30",
 		"--console-log-level=warn",
+		"--seed-time=0",
+		"--max-download-result=200",
 	}
 	if cfg.MaxDownload != "" {
 		args = append(args, "--max-overall-download-limit="+cfg.MaxDownload)
@@ -129,7 +177,7 @@ func New(cfg *config.Config) (*Manager, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		cfg: cfg, ctx: ctx, cancel: cancel, processDone: make(chan struct{}),
+		ctx: ctx, cancel: cancel, processDone: make(chan struct{}), watchDone: make(chan struct{}), sessionLock: lock,
 		tasks: make(map[string]Task), history: filepath.Join(dir, "history.json"),
 	}
 	m.loadHistory()
@@ -149,6 +197,8 @@ func New(cfg *config.Config) (*Manager, error) {
 	m.cmd = cmd
 	if err := guard.attach(cmd); err != nil {
 		_ = guard.kill(cmd)
+		_ = cmd.Wait()
+		_ = guard.close()
 		cancel()
 		return nil, fmt.Errorf("绑定 aria2c 生命周期: %w", err)
 	}
@@ -158,9 +208,12 @@ func New(cfg *config.Config) (*Manager, error) {
 	}()
 	m.rpc = newRPC(port, cfg.RPCSecret)
 	if err := m.waitReady(); err != nil {
+		close(m.watchDone)
 		_ = m.Close()
 		return nil, err
 	}
+	m.refresh()
+	started = true
 	go m.watch()
 	return m, nil
 }
@@ -201,6 +254,8 @@ func (m *Manager) Add(ctx context.Context, rawSource, output string) (Task, erro
 // AddWithSources adds one download using one or more equivalent HTTP(S) sources.
 // aria2 retries and selects another URI when a source times out or fails.
 func (m *Manager) AddWithSources(ctx context.Context, rawSources []string, output string) (Task, error) {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
 	if len(rawSources) == 0 {
 		return Task{}, errors.New("下载地址不能为空")
 	}
@@ -211,6 +266,9 @@ func (m *Manager) AddWithSources(ctx context.Context, rawSources []string, outpu
 			return Task{}, err
 		}
 		sources = append(sources, source)
+		if len(rawSources) > 1 && (source.Kind != downloader.SourceURI || !(strings.HasPrefix(source.Value, "http:") || strings.HasPrefix(source.Value, "https:"))) {
+			return Task{}, errors.New("备用下载源及主来源必须是 HTTP(S) 地址")
+		}
 	}
 	if sources[0].Kind == downloader.SourceTorrent && len(sources) > 1 {
 		return Task{}, errors.New("种子文件不能配置备用下载源")
@@ -247,6 +305,9 @@ func (m *Manager) AddWithSources(ctx context.Context, rawSources []string, outpu
 	}
 	task := Task{ID: gid, Name: displayName(sources[0].Value), Status: "waiting", Output: output, UpdatedAt: time.Now().UnixMilli()}
 	m.update(task)
+	m.mu.RLock()
+	task = m.tasks[gid]
+	m.mu.RUnlock()
 	return task, nil
 }
 
@@ -262,20 +323,30 @@ func displayName(source string) string {
 }
 
 func (m *Manager) Wait(gid string) int {
+	m.mu.Lock()
+	if _, exists := m.tasks[gid]; !exists {
+		m.mu.Unlock()
+		return 1
+	}
+	if m.waiters == nil {
+		m.waiters = make(map[string]int)
+	}
+	m.waiters[gid]++
+	m.mu.Unlock()
+	defer func() { m.mu.Lock(); m.waiters[gid]--; m.mu.Unlock() }()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-m.ctx.Done():
 			return 1
+		case <-m.processDone:
+			return 1
 		case <-ticker.C:
 			m.mu.RLock()
-			task, ok := m.tasks[gid]
+			status := m.completionStatus(gid, make(map[string]bool))
 			m.mu.RUnlock()
-			if !ok {
-				continue
-			}
-			switch task.Status {
+			switch status {
 			case "complete":
 				return 0
 			case "error", "removed":
@@ -285,6 +356,34 @@ func (m *Manager) Wait(gid string) int {
 	}
 }
 
+// Metadata downloads generate new GIDs. Completion means every descendant has
+// finished, rather than only the metadata or remote .torrent transfer.
+// The caller holds m.mu for reading.
+func (m *Manager) completionStatus(gid string, visited map[string]bool) string {
+	if visited[gid] {
+		return "error"
+	}
+	visited[gid] = true
+	task, ok := m.tasks[gid]
+	if !ok {
+		return "waiting"
+	}
+	if task.Status != "complete" || len(task.FollowedBy) == 0 {
+		return task.Status
+	}
+	status := "complete"
+	for _, child := range task.FollowedBy {
+		childStatus := m.completionStatus(child, visited)
+		if childStatus == "error" || childStatus == "removed" {
+			return childStatus
+		}
+		if childStatus != "complete" {
+			status = "waiting"
+		}
+	}
+	return status
+}
+
 func (m *Manager) SetEventSink(sink func(Event)) {
 	m.mu.Lock()
 	m.sink = sink
@@ -292,6 +391,10 @@ func (m *Manager) SetEventSink(sink func(Event)) {
 }
 
 func (m *Manager) List(offset, limit int) []Task {
+	return m.Page(offset, limit).Items
+}
+
+func (m *Manager) Page(offset, limit int) TaskPage {
 	if offset < 0 {
 		offset = 0
 	}
@@ -299,35 +402,37 @@ func (m *Manager) List(offset, limit int) []Task {
 		limit = 100
 	}
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	all := make([]Task, 0, len(m.tasks))
 	for _, task := range m.tasks {
 		all = append(all, task)
 	}
-	m.mu.RUnlock()
-	sort.Slice(all, func(i, j int) bool { return all[i].UpdatedAt > all[j].UpdatedAt })
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].AddedAt == all[j].AddedAt {
+			return all[i].ID > all[j].ID
+		}
+		return all[i].AddedAt > all[j].AddedAt
+	})
 	if offset >= len(all) {
-		return []Task{}
+		return TaskPage{Items: []Task{}, Total: len(all), Revision: m.revision, Stats: m.stats}
 	}
 	end := offset + limit
 	if end > len(all) {
 		end = len(all)
 	}
-	return all[offset:end]
-}
-
-func (m *Manager) Page(offset, limit int) TaskPage {
-	m.mu.RLock()
-	total := len(m.tasks)
-	m.mu.RUnlock()
-	return TaskPage{Items: m.List(offset, limit), Total: total}
+	return TaskPage{Items: all[offset:end], Total: len(all), Revision: m.revision, Stats: m.stats}
 }
 
 func (m *Manager) Pause(ctx context.Context, gid string) error {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
 	var result string
 	return m.rpc.call(ctx, "aria2.pause", []interface{}{gid}, &result)
 }
 
 func (m *Manager) Resume(ctx context.Context, gid string) error {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
 	var result string
 	return m.rpc.call(ctx, "aria2.unpause", []interface{}{gid}, &result)
 }
@@ -343,18 +448,58 @@ func (m *Manager) SetMaxDownload(ctx context.Context, limit string) error {
 }
 
 func (m *Manager) Remove(ctx context.Context, gid string) error {
-	var result string
-	if err := m.rpc.call(ctx, "aria2.forceRemove", []interface{}{gid}, &result); err != nil {
-		return err
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
+	m.mu.RLock()
+	task, exists := m.tasks[gid]
+	m.mu.RUnlock()
+	if !exists {
+		return errors.New("下载任务不存在")
 	}
-	m.mu.Lock()
-	delete(m.tasks, gid)
-	m.mu.Unlock()
+	var result string
+	// Query the engine because a task may have completed since the last poll.
+	var current rpcTask
+	err := m.rpc.call(ctx, "aria2.tellStatus", []interface{}{gid, taskFields}, &current)
+	if err == nil {
+		if !terminal(current.Status) {
+			if err := m.rpc.call(ctx, "aria2.forceRemove", []interface{}{gid}, &result); err != nil {
+				return err
+			}
+		}
+		if err := m.rpc.call(ctx, "aria2.removeDownloadResult", []interface{}{gid}, &result); err != nil {
+			return err
+		}
+	} else {
+		var rpcErr *rpcError
+		if !terminal(task.Status) || !errors.As(err, &rpcErr) || rpcErr.Code != 1 {
+			return err
+		}
+	}
+	m.deleteTask(gid)
 	m.saveHistory()
 	return nil
 }
 
+func (m *Manager) deleteTask(gid string) {
+	m.mu.Lock()
+	task, exists := m.tasks[gid]
+	if !exists {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.tasks, gid)
+	m.stats.adjust(task, -1)
+	m.revision++
+	event := Event{Kind: "remove", Task: task, Total: len(m.tasks), Revision: m.revision, Stats: m.stats}
+	sink := m.sink
+	m.mu.Unlock()
+	if sink != nil {
+		sink(event)
+	}
+}
+
 func (m *Manager) watch() {
+	defer close(m.watchDone)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -370,6 +515,8 @@ func (m *Manager) watch() {
 }
 
 func (m *Manager) refresh() {
+	m.controlMu.Lock()
+	defer m.controlMu.Unlock()
 	ctx, cancel := context.WithTimeout(m.ctx, 8*time.Second)
 	defer cancel()
 	var groups [][]rpcTask
@@ -383,11 +530,22 @@ func (m *Manager) refresh() {
 	}
 	for _, method := range methods {
 		var found []rpcTask
-		if err := m.rpc.call(ctx, method.name, method.params, &found); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				log.Printf("refresh %s: %v", method.name, err)
+		for offset := 0; ; offset += 1000 {
+			params := slices.Clone(method.params)
+			if len(params) == 3 {
+				params[0] = offset
 			}
-			return
+			var page []rpcTask
+			if err := m.rpc.call(ctx, method.name, params, &page); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("refresh %s: %v", method.name, err)
+				}
+				return
+			}
+			found = append(found, page...)
+			if len(params) != 3 || len(page) < 1000 {
+				break
+			}
 		}
 		groups = append(groups, found)
 	}
@@ -396,6 +554,7 @@ func (m *Manager) refresh() {
 			m.update(convertTask(raw))
 		}
 	}
+	m.pruneHistory(ctx)
 }
 
 func convertTask(raw rpcTask) Task {
@@ -410,6 +569,7 @@ func convertTask(raw rpcTask) Task {
 		ID: raw.GID, Name: name, Status: raw.Status,
 		Total: number(raw.TotalLength), Completed: number(raw.CompletedLength), DownloadBPS: number(raw.DownloadSpeed),
 		Output: raw.Dir, Error: raw.ErrorMessage, UpdatedAt: time.Now().UnixMilli(),
+		FollowedBy: raw.FollowedBy,
 	}
 }
 
@@ -421,16 +581,27 @@ func number(value string) int64 {
 func (m *Manager) update(task Task) {
 	m.mu.Lock()
 	old, exists := m.tasks[task.ID]
-	changed := !exists || old.Status != task.Status || old.Completed != task.Completed || old.Total != task.Total || old.DownloadBPS != task.DownloadBPS || old.Name != task.Name || old.Error != task.Error
+	changed := !exists || old.Status != task.Status || old.Completed != task.Completed || old.Total != task.Total || old.DownloadBPS != task.DownloadBPS || old.Name != task.Name || old.Error != task.Error || old.Output != task.Output || !slices.Equal(old.FollowedBy, task.FollowedBy)
 	if !changed {
 		m.mu.Unlock()
 		return
 	}
+	if exists {
+		task.AddedAt = old.AddedAt
+	} else if task.AddedAt == 0 {
+		task.AddedAt = time.Now().UnixMilli()
+	}
 	m.tasks[task.ID] = task
+	if exists {
+		m.stats.adjust(old, -1)
+	}
+	m.stats.adjust(task, 1)
+	m.revision++
+	event := Event{Kind: "upsert", Task: task, Added: !exists, Total: len(m.tasks), Revision: m.revision, Stats: m.stats}
 	sink := m.sink
 	m.mu.Unlock()
 	if sink != nil {
-		sink(Event{Kind: "upsert", Task: task})
+		sink(event)
 	}
 	if task.Status == "complete" || task.Status == "error" || task.Status == "removed" {
 		m.saveHistory()
@@ -447,12 +618,24 @@ func (m *Manager) loadHistory() {
 		return
 	}
 	for _, task := range tasks {
+		if !terminal(task.Status) {
+			continue
+		}
+		if task.AddedAt == 0 {
+			task.AddedAt = task.UpdatedAt
+		}
 		m.tasks[task.ID] = task
+		m.stats.adjust(task, 1)
 	}
 }
 
 func (m *Manager) saveHistory() {
-	tasks := m.List(0, 200)
+	m.historyMu.Lock()
+	defer m.historyMu.Unlock()
+	tasks := m.terminalTasks()
+	if len(tasks) > 200 {
+		tasks = tasks[:200]
+	}
 	data, err := json.MarshalIndent(tasks, "", "  ")
 	if err != nil {
 		return
@@ -471,10 +654,79 @@ func (m *Manager) saveHistory() {
 	}
 }
 
+func terminal(status string) bool {
+	return status == "complete" || status == "error" || status == "removed"
+}
+
+func (m *Manager) terminalTasks() []Task {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	tasks := make([]Task, 0)
+	for _, task := range m.tasks {
+		if terminal(m.completionStatus(task.ID, make(map[string]bool))) {
+			tasks = append(tasks, task)
+		}
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].AddedAt == tasks[j].AddedAt {
+			return tasks[i].ID > tasks[j].ID
+		}
+		return tasks[i].AddedAt > tasks[j].AddedAt
+	})
+	return tasks
+}
+
+func (m *Manager) pruneHistory(ctx context.Context) {
+	tasks := m.terminalTasks()
+	if len(tasks) <= 200 {
+		return
+	}
+	m.mu.RLock()
+	protected := make(map[string]bool)
+	var protect func(string)
+	protect = func(id string) {
+		if protected[id] {
+			return
+		}
+		protected[id] = true
+		for _, child := range m.tasks[id].FollowedBy {
+			protect(child)
+		}
+	}
+	for id, count := range m.waiters {
+		if count > 0 {
+			protect(id)
+		}
+	}
+	m.mu.RUnlock()
+	for _, task := range tasks[200:] {
+		if protected[task.ID] {
+			continue
+		}
+		var result string
+		_ = m.rpc.call(ctx, "aria2.removeDownloadResult", []interface{}{task.ID}, &result)
+		m.deleteTask(task.ID)
+	}
+	m.saveHistory()
+}
+
 func (m *Manager) Close() error {
 	m.closeOnce.Do(func() {
 		m.cancel()
+		<-m.watchDone
+		m.controlMu.Lock()
+		defer m.controlMu.Unlock()
 		m.saveHistory()
+		saveCtx, saveCancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		var saved string
+		if err := m.rpc.call(saveCtx, "aria2.saveSession", nil, &saved); err != nil {
+			select {
+			case <-m.processDone:
+			default:
+				log.Printf("save aria2 session: %v", err)
+			}
+		}
+		saveCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 		defer cancel()
 		var result string
@@ -491,6 +743,12 @@ func (m *Manager) Close() error {
 				}
 			}
 		}
+		if err := m.guard.close(); m.closeErr == nil {
+			m.closeErr = err
+		}
+		if err := m.sessionLock.Close(); m.closeErr == nil {
+			m.closeErr = err
+		}
 	})
 	return m.closeErr
 }
@@ -506,5 +764,9 @@ func OpenPath(path string) error {
 		cmd = exec.Command("xdg-open", path)
 	}
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

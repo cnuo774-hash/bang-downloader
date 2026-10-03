@@ -1,0 +1,46 @@
+# Bang 2.0.1 发行验收
+
+依据 README 的功能承诺，代码与构建产物必须满足以下标准。
+
+## 自动化门禁
+
+- CLI、前端 package.json 和桌面产品版本一致。
+- Go 单元测试、竞态检查、静态检查和 Go 可达漏洞扫描通过。
+- 前端 TypeScript 检查、生产构建和分页事件回归测试通过。
+- macOS arm64、macOS amd64、Windows amd64、Linux amd64 在各自原生 runner 上构建成功。
+- 每个目标平台使用实际内嵌 aria2 1.37.0 通过集成测试：HTTP 内容一致性、备用源切换、暂停、恢复、重启会话、种子元数据后续任务、失败退出、历史删除、保留文件和会话互斥。
+- 引擎退出使 CLI 返回非零状态，正常退出释放进程及系统锁；终态历史最多保留 200 条，正在等待的任务不因历史清理丢失。
+- RPC 只监听回环地址并使用随机密钥；发行构建使用 `release` 标签，缺少内嵌资源时禁止回退到 PATH。
+- 下载的 aria2 归档通过固定 SHA-256 校验。发行包附带 Bang 许可、第三方说明、aria2 完整许可和固定版本源码；Windows 同时保留官方包的 OpenSSL 许可与构建说明。
+
+## 复现
+
+使用 Go 1.26.8、Node.js 22 和 pnpm 10。Linux 需安装 README 与工作流所列的原生依赖。
+
+```sh
+cd frontend
+pnpm install --frozen-lockfile
+pnpm test
+pnpm build
+cd ..
+go test -race ./...
+go vet ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+bash scripts/prepare-aria2.sh
+BANG_REQUIRE_EMBEDDED=1 go test -race -tags 'integration release' ./...
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags release
+```
+
+Linux 将 `webkit2_41` 加入测试、扫描和 Wails 构建标签。Windows 使用 PowerShell 准备脚本以及 `$env:BANG_REQUIRE_EMBEDDED = "1"`。所有下载测试使用临时目录和本地 HTTP 服务，不依赖真实下载资源。
+
+`native builds` 的 `workflow_dispatch` 用于完整发行候选验收，成功后可从 Actions 下载四个平台的归档。只有推送 `v*` 标签才会触发 GitHub Release，且所有平台构建必须成功。源码和发行文件的 SHA-256 清单一同发布。
+
+## 验证记录（2026-10-03）
+
+- 本地 macOS arm64：Go 竞态及集成测试、静态检查、前端生产构建、前端事件回归、零可达漏洞扫描与原生桌面打包通过。
+- 四平台原生验收：推送后由 GitHub Actions 执行，最终结果以相同提交的工作流记录为准。
+- 原生窗口点击与视觉验收未自动执行：当前系统未授予 Computer Use 权限，Browser 无法核实管理策略而拒绝本地页面访问。自动化测试覆盖前端状态逻辑和真实后端下载流程，不能代替窗口、文件选择器和视觉的人工检查。
+
+## 人工桌面检查
+
+发布前在目标操作系统打开程序，检查空列表、新建 HTTP 与种子任务、保存目录选择、暂停恢复、已完成任务移除、偏好保存、窗口关闭及重新打开。测试下载应使用本地或有权访问的资源。确认任务名称、路径与错误文本完整可读，键盘可访问按钮和弹窗，窗口关闭后没有残留 aria2 子进程。

@@ -2,6 +2,8 @@ module github.com/cnuo774-hash/bang-downloader
 
 go 1.23.0
 
+toolchain go1.26.8
+
 require (
 	github.com/wailsapp/wails/v2 v2.10.2
 	golang.org/x/sys v0.31.0

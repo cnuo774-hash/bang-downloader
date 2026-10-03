@@ -10,3 +10,4 @@ frontend/dist/*
 !frontend/dist/.gitkeep
 /bang-downloader
 *.log
+frontend/.test-dist/

@@ -70,15 +70,18 @@ func (c *rpcClient) call(ctx context.Context, method string, params []interface{
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("aria2 RPC HTTP %s", resp.Status)
-	}
 	var envelope rpcResponse
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("aria2 RPC HTTP %s", resp.Status)
+		}
 		return err
 	}
 	if envelope.Error != nil {
 		return envelope.Error
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("aria2 RPC HTTP %s", resp.Status)
 	}
 	if result == nil || len(envelope.Result) == 0 {
 		return nil

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	MaxDownload   string `json:"maxDownload,omitempty"`
 	EngineVersion string `json:"engineVersion"`
 	dirty         bool
+	path          string
 }
 
 type PublicConfig struct {
@@ -44,7 +46,7 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Config{SchemaVersion: 1, Output: filepath.Join(home(), "Downloads"), RPCSecret: secret, EngineVersion: "1.37.0", dirty: true}, nil
+		return &Config{SchemaVersion: 1, Output: filepath.Join(home(), "Downloads"), RPCSecret: secret, EngineVersion: "1.37.0", dirty: true, path: path}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -52,6 +54,10 @@ func Load(path string) (*Config, error) {
 	var c Config
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, err
+	}
+	c.path = path
+	if c.SchemaVersion > 1 {
+		return nil, fmt.Errorf("配置版本 %d 高于当前程序支持的版本", c.SchemaVersion)
 	}
 	if c.RPCSecret == "" {
 		secret, err := newSecret()
@@ -73,9 +79,13 @@ func Load(path string) (*Config, error) {
 }
 
 func Save(c *Config) error {
-	path, err := Path()
-	if err != nil {
-		return err
+	path := c.path
+	if path == "" {
+		var err error
+		path, err = Path()
+		if err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -85,6 +95,7 @@ func Save(c *Config) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
+	defer tmp.Close()
 	if err := tmp.Chmod(0o600); err != nil {
 		return err
 	}
@@ -93,6 +104,9 @@ func Save(c *Config) error {
 		return err
 	}
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
 		return err
 	}
 	if err := tmp.Close(); err != nil {

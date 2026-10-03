@@ -26,11 +26,14 @@ func ParseSource(raw string) (Source, error) {
 	if raw == "" {
 		return Source{}, errors.New("下载地址不能为空")
 	}
-	if strings.ContainsRune(raw, '\x00') {
+	if strings.ContainsAny(raw, "\x00\r\n") {
 		return Source{}, errors.New("下载地址包含非法字符")
 	}
 	parsed, err := url.Parse(raw)
 	if err == nil && (parsed.Scheme == "magnet" || parsed.Scheme == "http" || parsed.Scheme == "https") {
+		if parsed.Scheme != "magnet" && (parsed.Hostname() == "" || parsed.Opaque != "") {
+			return Source{}, errors.New("HTTP(S) 地址必须包含主机名")
+		}
 		if parsed.Scheme == "magnet" && parsed.Query().Get("xt") == "" {
 			return Source{}, errors.New("磁力链接缺少 xt 参数")
 		}

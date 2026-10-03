@@ -13,6 +13,33 @@ func TestParseMagnet(t *testing.T) {
 	}
 }
 
+func TestHTTPSourceValidation(t *testing.T) {
+	for _, raw := range []string{"https://example.com/file.zip", "http://127.0.0.1:8080/file"} {
+		if source, err := ParseSource(raw); err != nil || source.Kind != SourceURI {
+			t.Fatalf("valid source %q rejected: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"http:///file.zip", "https:relative", "https://", "https://example.com/a\nb", "magnet:?dn=missing-hash"} {
+		if _, err := ParseSource(raw); err == nil {
+			t.Fatalf("accepted invalid source %q", raw)
+		}
+	}
+}
+
+func TestOutputRejectsExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveOutput(path); err == nil {
+		t.Fatal("accepted file as directory")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "keep" {
+		t.Fatal("existing file was modified")
+	}
+}
+
 func TestResolveRelativeOutput(t *testing.T) {
 	base := t.TempDir()
 	old, _ := os.Getwd()

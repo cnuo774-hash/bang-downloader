@@ -14,6 +14,8 @@ Bang 是一个本地优先的下载工具，同时提供命令行和 Wails 桌�
 - aria2 RPC 只监听 `127.0.0.1`，并使用首次启动时生成的随机密钥
 - 下载目录、全局限速、会话和历史记录持久化
 - 分页 API、虚拟列表和增量任务事件，适合较大的任务列表
+- 移除任务记录时保留已下载文件；同一用户会话仅允许一个 Bang 实例运行
+- 磁力和远程种子任务会继续跟踪实际文件下载；文件完成后停止做种
 - macOS、Windows 和 Linux 分别在原生 GitHub Actions runner 上构建
 
 ## 使用
@@ -60,11 +62,12 @@ Bang 使用操作系统提供的标准用户目录，不会把 aria2c 释放到�
 
 ## 开发
 
-需要 Go 1.23+、Node.js 22、pnpm 10，以及当前平台的 Wails 系统依赖。发布包会内嵌固定版本的 aria2c，并在运行时释放到用户缓存目录。开发模式若缺少对应资源会回退到 `PATH` 中的 aria2c。HTTP 下载可通过重复 `--mirror` 提供备用源；aria2 会在连接超时、失败重试时切换 URI。
+需要 Go 1.26.8、Node.js 22、pnpm 10，以及当前平台的 Wails 系统依赖。发布包会内嵌固定版本的 aria2c，并在运行时释放到用户缓存目录。开发模式若缺少对应资源会回退到 `PATH` 中的 aria2c。HTTP 下载可通过重复 `--mirror` 提供备用源；aria2 会在连接超时、失败重试时切换 URI。
 
 ```bash
 cd frontend
 pnpm install --frozen-lockfile
+pnpm test
 pnpm build
 cd ..
 
@@ -78,16 +81,22 @@ go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 dev
 ```bash
 # macOS / Linux，在目标平台本机执行
 bash scripts/prepare-aria2.sh
-go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags release
 
 # Windows PowerShell
 ./scripts/prepare-aria2.ps1
-go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
+go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags release
 ```
 
 Wails 依赖原生 WebView 和 CGO。不要在 Linux 上交叉编译 Windows 或 macOS 版本；仓库的 Release 工作流为每个平台使用各自的 runner。
 
 macOS 的准备脚本优先从 GitHub Releases 下载 aria2 官方源码；连接超时或下载失败时会自动切换到 SourceForge 官方镜像。无论使用哪个来源，都必须通过固定的 SHA-256 校验才会参与构建。
+
+## 发行验收
+
+发行验收标准、复现命令和当前验证记录见 [RELEASE.md](RELEASE.md)。每个平台的原生构建必须通过内嵌引擎集成测试后才会上传发行包。手动执行 `native builds` 工作流只构建和验证；推送 `v*` 标签才会创建 GitHub Release。
+
+Linux 构建还需 `libssl-dev` 和 `zlib1g-dev`。macOS 和 Linux 的准备脚本均从校验后的官方源码编译；Windows 使用经过固定 SHA-256 校验的官方归档。正式包包含第三方许可证和 aria2 源码归档。
 
 ## 项目结构
 

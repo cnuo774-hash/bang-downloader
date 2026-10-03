@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   build:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -15,13 +16,13 @@ jobs:
           - { os: macos-14, artifact: bang-macos-arm64 }
           - { os: macos-15-intel, artifact: bang-macos-amd64 }
           - { os: windows-latest, artifact: bang-windows-amd64 }
-          - { os: ubuntu-latest, artifact: bang-linux-amd64 }
+          - { os: ubuntu-22.04, artifact: bang-linux-amd64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23.x"
+          go-version: "1.26.8"
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -32,7 +33,7 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install Linux WebView dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev unzip
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libssl-dev zlib1g-dev
       - name: Embed pinned aria2 (Unix)
         if: runner.os != 'Windows'
         run: bash scripts/prepare-aria2.sh
@@ -42,12 +43,24 @@ jobs:
         run: ./scripts/prepare-aria2.ps1
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
+      - run: pnpm test && pnpm build
+        working-directory: frontend
+      - name: Tests with embedded engine (Linux)
+        if: runner.os == 'Linux'
+        env:
+          BANG_REQUIRE_EMBEDDED: "1"
+        run: go test -race -tags "integration release webkit2_41" ./... && go vet -tags "release webkit2_41" ./...
+      - name: Tests with embedded engine (macOS/Windows)
+        if: runner.os != 'Linux'
+        env:
+          BANG_REQUIRE_EMBEDDED: "1"
+        run: go test -race -tags "integration release" ./... && go vet -tags release ./...
       - name: Build Wails application (Linux)
         if: runner.os == 'Linux'
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags webkit2_41
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags "release webkit2_41"
       - name: Build Wails application (macOS/Windows)
         if: runner.os != 'Linux'
-        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean
+        run: go run github.com/wailsapp/wails/v2/cmd/wails@v2.10.2 build -clean -tags release
       - name: Verify embedded aria2
         shell: bash
         run: |
@@ -57,13 +70,19 @@ jobs:
           "$target" --version | head -n 1 | grep -F "aria2 version 1.37.0"
       - name: Add license notices (Unix)
         if: runner.os != 'Windows'
-        run: mkdir -p build/bin/licenses && cp LICENSE THIRD_PARTY_NOTICES.md build/bin/licenses/
+        run: |
+          mkdir -p build/bin/licenses
+          cp LICENSE THIRD_PARTY_NOTICES.md build/third-party/ARIA2-COPYING build/bin/licenses/
+          cp build/third-party/aria2-1.37.0-source.tar.xz build/bin/licenses/
       - name: Add license notices (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item build/bin/licenses -ItemType Directory -Force | Out-Null
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md build/bin/licenses/
+          Copy-Item build/third-party/* build/bin/licenses/
+          Invoke-WebRequest https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz -OutFile build/bin/licenses/aria2-1.37.0-source.tar.xz
+          if ((Get-FileHash build/bin/licenses/aria2-1.37.0-source.tar.xz -Algorithm SHA256).Hash.ToLowerInvariant() -ne "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b") { throw "Source checksum mismatch" }
       - name: Package artifact (Unix)
         if: runner.os != 'Windows'
         run: tar -czf "${{ matrix.artifact }}.tar.gz" -C build/bin .
@@ -89,6 +108,8 @@ jobs:
         run: |
           curl -fL --retry 3 https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0.tar.xz -o dist/aria2-1.37.0-source.tar.xz
           echo "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b  dist/aria2-1.37.0-source.tar.xz" | sha256sum -c -
+      - name: Generate release checksums
+        run: cd dist && sha256sum *.tar.gz *.zip *.tar.xz > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

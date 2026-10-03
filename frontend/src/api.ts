@@ -12,21 +12,9 @@ import {
   SaveSettings
 } from '../wailsjs/go/main/App'
 
-export type Task = {
-  id: string
-  name: string
-  status: string
-  total: number
-  completed: number
-  downloadBps: number
-  output: string
-  error?: string
-  updatedAt: number
-}
-
-export type TaskEvent = { kind: 'upsert'; task: Task }
+import type { Task, TaskEvent, TaskPage } from './taskStore'
+export type { Task, TaskEvent, TaskPage } from './taskStore'
 export type PublicConfig = { output: string; maxDownload: string; engineVersion: string }
-export type TaskPage = { items: Task[]; total: number }
 
 export const backend = {
   add: (source: string, output: string) => Add(source, output) as Promise<Task>,

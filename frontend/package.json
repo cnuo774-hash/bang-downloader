@@ -1,12 +1,13 @@
 {
   "name": "bang-frontend",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "test": "tsc --target ES2022 --module ESNext --outDir .test-dist src/taskStore.ts && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13",

@@ -42,40 +42,37 @@ verify_sha256() {
 
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
-    archive="aria2-x86_64-linux-musl_static.zip"
-    url="https://github.com/abcfy2/aria2-static-build/releases/download/${version}/${archive}"
-    curl -fL --retry 3 "$url" -o "$temp_dir/aria2.zip"
-    unzip -q "$temp_dir/aria2.zip" -d "$temp_dir/unpacked"
-    binary="$(find "$temp_dir/unpacked" -type f -name aria2c -print -quit)"
     target="$asset_dir/linux-amd64-aria2c"
+    tls_options=(--without-gnutls --with-openssl)
+    jobs="$(getconf _NPROCESSORS_ONLN)"
     ;;
   Darwin:arm64|Darwin:x86_64)
-    archive="aria2-${version}.tar.xz"
-    source_archive="$temp_dir/aria2.tar.xz"
-    download_with_fallback "$source_archive" \
-      "https://github.com/aria2/aria2/releases/download/release-${version}/${archive}" \
-      "https://sourceforge.net/projects/aria2/files/stable/aria2-${version}/${archive}/download"
-    verify_sha256 "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b" "$source_archive"
-    tar -xJf "$temp_dir/aria2.tar.xz" -C "$temp_dir"
-    source_dir="$temp_dir/aria2-${version}"
-    (cd "$source_dir" && ./configure \
-      --with-appletls \
-      --without-gnutls \
-      --without-openssl \
-      --without-libnettle \
-      --without-libgcrypt \
-      --without-libcares \
-      --without-libxml2 \
-      --without-libssh2 \
-      --without-sqlite3 && make -j"$(sysctl -n hw.ncpu)")
-    binary="$source_dir/src/aria2c"
     if [[ "$(uname -m)" == "arm64" ]]; then target="$asset_dir/darwin-arm64-aria2c"; else target="$asset_dir/darwin-amd64-aria2c"; fi
+    tls_options=(--with-appletls --without-gnutls --without-openssl)
+    jobs="$(sysctl -n hw.ncpu)"
     ;;
   *)
     echo "Unsupported Unix build host: $(uname -s) $(uname -m)" >&2
     exit 1
     ;;
 esac
+
+archive="aria2-${version}.tar.xz"
+source_archive="$temp_dir/aria2.tar.xz"
+download_with_fallback "$source_archive" \
+  "https://github.com/aria2/aria2/releases/download/release-${version}/${archive}" \
+  "https://sourceforge.net/projects/aria2/files/stable/aria2-${version}/${archive}/download"
+verify_sha256 "60a420ad7085eb616cb6e2bdf0a7206d68ff3d37fb5a956dc44242eb2f79b66b" "$source_archive"
+tar -xJf "$source_archive" -C "$temp_dir"
+source_dir="$temp_dir/aria2-${version}"
+(cd "$source_dir" && ./configure \
+  "${tls_options[@]}" \
+  --without-libnettle --without-libgcrypt --without-libcares \
+  --without-libxml2 --without-libssh2 --without-sqlite3 && make -j"$jobs")
+binary="$source_dir/src/aria2c"
+mkdir -p "$root/build/third-party"
+cp "$source_archive" "$root/build/third-party/aria2-${version}-source.tar.xz"
+cp "$source_dir/COPYING" "$root/build/third-party/ARIA2-COPYING"
 
 test -x "$binary"
 install -m 0700 "$binary" "$target"

@@ -58,8 +58,13 @@ func (a *App) SetOutput(output string) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.cfg.Output = target
-	return config.Save(a.cfg)
+	next := *a.cfg
+	next.Output = target
+	if err := config.Save(&next); err != nil {
+		return err
+	}
+	*a.cfg = next
+	return nil
 }
 
 func (a *App) SaveSettings(output, maxDownload string) error {
@@ -71,14 +76,19 @@ func (a *App) SaveSettings(output, maxDownload string) error {
 	if limit != "" && !downloadLimitPattern.MatchString(limit) {
 		return fmt.Errorf("限速格式无效，请使用 512K、10M、1G 或留空")
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if err := a.manager.SetMaxDownload(a.ctx, limit); err != nil {
 		return err
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.cfg.Output = target
-	a.cfg.MaxDownload = limit
-	return config.Save(a.cfg)
+	next := *a.cfg
+	next.Output, next.MaxDownload = target, limit
+	if err := config.Save(&next); err != nil {
+		_ = a.manager.SetMaxDownload(a.ctx, a.cfg.MaxDownload)
+		return err
+	}
+	*a.cfg = next
+	return nil
 }
 
 func (a *App) OpenOutput() error {
