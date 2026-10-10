@@ -4,6 +4,8 @@ Bang 是一个同时提供桌面界面和命令行的下载工具。Go 后端通
 
 当前代码版本为 **2.0.1**，内嵌下载引擎版本为 **aria2 1.37.0**。
 
+桌面界面采用「孤独摇滚」后藤一里（波奇酱）主题：浅粉工作区、深色侧栏和蓝黄发饰点缀，角色素材仅用于欢迎区、空列表和主题介绍。图片随应用打包，运行时无需访问素材网站。素材来源及版权说明见 [SOURCES.md](frontend/src/assets/bocchi/SOURCES.md)。
+
 ## 当前状态与下载
 
 截至 2026-10-03，2.0.1 已通过[四平台原生构建与集成验收](https://github.com/cnuo774-hash/bang-downloader/actions/runs/37126435060)，以及[前后端测试和 Go 可达漏洞扫描](https://github.com/cnuo774-hash/bang-downloader/actions/runs/37126423994)。桌面窗口、文件选择器和视觉检查仍保留为人工验收项，详细记录见 [RELEASE.md](RELEASE.md)。
